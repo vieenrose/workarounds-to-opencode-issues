@@ -203,79 +203,130 @@ def get_message_parts(message_id: str) -> list[Path]:
     return list(parts_dir.glob("prt_*.json"))
 
 
+def find_error_messages(session_id: str) -> list[dict]:
+    """Find all messages with thinking block signature errors in a session."""
+    error_messages = []
+    session_msg_dir = MESSAGE_PATH / session_id
+    
+    if not session_msg_dir.exists():
+        return error_messages
+    
+    for msg_file in session_msg_dir.glob("msg_*.json"):
+        try:
+            with open(msg_file) as f:
+                data = json.load(f)
+            
+            error = data.get("error", {})
+            error_data = error.get("data", {})
+            error_msg = error_data.get("message", "")
+            
+            if "Invalid" in error_msg and "signature" in error_msg and "thinking" in error_msg:
+                data["_file_path"] = msg_file
+                error_messages.append(data)
+        except (json.JSONDecodeError, IOError):
+            continue
+    
+    return error_messages
+
+
 def fix_session(session_id: str, error_msg_index: int = 1, dry_run: bool = False) -> dict:
     """
-    Fix a corrupted session by removing the message containing the invalid thinking block.
+    Fix a corrupted session by removing:
+    1. The message containing the invalid thinking block (first assistant message)
+    2. All error messages that recorded the API failures
     
     Returns a dict with:
         - success: bool
-        - message_removed: str (message ID)
+        - messages_removed: list of message IDs
         - parts_removed: int
         - backup_path: str (if not dry_run)
         - error: str (if failed)
     """
     result = {
         "success": False,
-        "message_removed": None,
+        "messages_removed": [],
         "parts_removed": 0,
         "backup_path": None,
         "error": None,
     }
     
-    # Find the message to remove
+    # Find the message containing the thinking block to remove
     msg_to_remove = find_message_to_remove(session_id, error_msg_index)
     
-    if not msg_to_remove:
-        result["error"] = "Could not identify message to remove"
+    # Find all error messages to remove
+    error_messages = find_error_messages(session_id)
+    
+    if not msg_to_remove and not error_messages:
+        result["error"] = "Could not identify any messages to remove"
         return result
     
-    message_id = msg_to_remove.get("id")
-    msg_file = msg_to_remove.get("_file_path")
+    # Collect all messages to remove
+    messages_to_remove = []
     
-    if not message_id or not msg_file:
-        result["error"] = "Invalid message data"
-        return result
+    if msg_to_remove:
+        messages_to_remove.append(msg_to_remove)
     
-    result["message_removed"] = message_id
+    for err_msg in error_messages:
+        # Avoid duplicates
+        if err_msg.get("id") not in [m.get("id") for m in messages_to_remove]:
+            messages_to_remove.append(err_msg)
     
-    # Get associated parts
-    parts = get_message_parts(message_id)
-    result["parts_removed"] = len(parts)
+    # Collect all files to backup and remove
+    files_to_backup = []
+    all_parts = []
+    
+    for msg in messages_to_remove:
+        message_id = msg.get("id")
+        msg_file = msg.get("_file_path")
+        
+        if message_id and msg_file:
+            result["messages_removed"].append(message_id)
+            files_to_backup.append(msg_file)
+            
+            # Get associated parts
+            parts = get_message_parts(message_id)
+            all_parts.extend(parts)
+            files_to_backup.extend(parts)
+    
+    result["parts_removed"] = len(all_parts)
     
     if dry_run:
         result["success"] = True
         return result
     
-    # Collect all files to backup
-    files_to_backup = [msg_file] + parts
-    
     # Backup before modification
     backup_dir = backup_files(files_to_backup, f"session_{session_id[:20]}")
     result["backup_path"] = str(backup_dir)
     
-    # Remove the message file
-    try:
-        msg_file.unlink()
-    except IOError as e:
-        result["error"] = f"Failed to remove message file: {e}"
-        return result
+    # Remove message files
+    for msg in messages_to_remove:
+        msg_file = msg.get("_file_path")
+        if msg_file and msg_file.exists():
+            try:
+                msg_file.unlink()
+            except IOError as e:
+                # Continue even if some fail
+                pass
     
     # Remove part files
-    for part_file in parts:
+    for part_file in all_parts:
         try:
             part_file.unlink()
         except IOError as e:
             # Continue even if some parts fail
             pass
     
-    # Remove parts directory if empty
-    parts_dir = PART_PATH / message_id
-    if parts_dir.exists():
-        try:
-            parts_dir.rmdir()
-        except OSError:
-            # Directory not empty or other error, ignore
-            pass
+    # Remove empty parts directories
+    for msg in messages_to_remove:
+        message_id = msg.get("id")
+        if message_id:
+            parts_dir = PART_PATH / message_id
+            if parts_dir.exists():
+                try:
+                    parts_dir.rmdir()
+                except OSError:
+                    # Directory not empty or other error, ignore
+                    pass
     
     result["success"] = True
     return result
@@ -317,11 +368,18 @@ def list_corrupted():
             print(f"      Model: {msg['provider_id']}/{msg['model_id']}")
             print(f"      Error: {msg['error_message']}")
         
-        # Find the message that would be removed
+        # Find messages that would be removed
         msg_to_remove = find_message_to_remove(session_id, info["error_msg_index"])
+        error_messages = find_error_messages(session_id)
+        
+        total_msgs = (1 if msg_to_remove else 0) + len(error_messages)
+        total_parts = 0
         if msg_to_remove:
-            parts = get_message_parts(msg_to_remove.get("id", ""))
-            print(f"\n    Fix: Remove message {msg_to_remove.get('id')} ({len(parts)} parts)")
+            total_parts += len(get_message_parts(msg_to_remove.get("id", "")))
+        for err_msg in error_messages:
+            total_parts += len(get_message_parts(err_msg.get("id", "")))
+        
+        print(f"\n    Fix: Remove {total_msgs} message(s) and {total_parts} part(s)")
     
     print("\n" + "-" * 100)
     print(f"\nTo fix a specific session, run:")
@@ -389,8 +447,10 @@ def fix_command(target: str, dry_run: bool = False):
         
         if result["success"]:
             print(f"  Status: {'WOULD SUCCEED' if dry_run else 'SUCCESS'}")
-            print(f"  Message to remove: {result['message_removed']}")
-            print(f"  Parts to remove: {result['parts_removed']}")
+            print(f"  Messages removed: {len(result['messages_removed'])}")
+            for mid in result['messages_removed']:
+                print(f"    - {mid}")
+            print(f"  Parts removed: {result['parts_removed']}")
             if result["backup_path"]:
                 print(f"  Backup saved to: {result['backup_path']}")
         else:
