@@ -180,15 +180,68 @@ Strip thinking blocks from the conversation history:
 
 ---
 
-## Future Tool Requirements
+## Session Repair Tool
 
-A session repair tool should:
+A session repair tool has been implemented at `tools/session-repair.py`.
 
-1. **Scan** all sessions for signature-related errors
-2. **Identify** the root cause (which message/part contains invalid signatures)
-3. **Offer repair options:**
-   - Remove thinking blocks
-   - Truncate to safe point
-   - Export and recreate session
-4. **Backup** before making changes
-5. **Validate** repaired session can be loaded
+### Usage
+
+```bash
+# List all corrupted sessions
+python3 tools/session-repair.py list
+
+# Preview fix without making changes
+python3 tools/session-repair.py fix --all --dry-run
+
+# Fix a specific session
+python3 tools/session-repair.py fix <session_id>
+
+# Fix all corrupted sessions
+python3 tools/session-repair.py fix --all
+```
+
+### Features
+
+1. **Scan** - Finds all sessions with signature-related errors
+2. **Identify** - Shows which message contains the invalid thinking block
+3. **Fix** - Removes the corrupted message and its parts
+4. **Backup** - Creates backups in `~/.local/share/opencode/repair-backups/` before changes
+5. **Dry-run** - Preview mode to see what would be changed
+
+### Example Output
+
+```
+$ python3 tools/session-repair.py list
+
+Scanning for corrupted sessions...
+
+Found 6 corrupted message(s):
+
+----------------------------------------------------------------------------------------------------
+
+[1] Session: Reviewing SHM TTS migration plan
+    Session ID: ses_471a726a1ffe1hQ6hYnZZZ6btG
+    Corrupted Messages: 3
+
+    - Message: msg_b91cd4f14002T7iD6rZ3TbqUIY
+      Time: 2026-01-06 13:35:10
+      Model: anthropic/claude-opus-4-5
+      Error: messages.1.content.0: Invalid `signature` in `thinking` block
+
+    Fix: Remove message msg_b8e58d991002ckhkduTVs0f28I (3 parts)
+
+----------------------------------------------------------------------------------------------------
+
+To fix a specific session, run:
+  python session-repair.py fix <session_id>
+
+To fix all corrupted sessions, run:
+  python session-repair.py fix --all
+```
+
+### How It Works
+
+1. Scans `~/.local/share/opencode/storage/message/` for error messages containing "Invalid signature in thinking block"
+2. Parses the error position (e.g., `messages.1.content.0`) to identify which message has the corrupted thinking block
+3. Removes the identified message file and its associated parts from `storage/part/`
+4. Creates a timestamped backup before any modifications
