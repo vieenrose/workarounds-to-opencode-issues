@@ -184,31 +184,83 @@ Strip thinking blocks from the conversation history:
 
 A session repair tool has been implemented at `tools/session-repair.py`.
 
-### Usage
+### Installation
+
+```bash
+git clone https://github.com/vieenrose/opencode-toolkit.git
+cd opencode-toolkit
+```
+
+No dependencies required - uses Python 3 standard library only.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `list` | Scan and display all corrupted sessions |
+| `fix <target>` | Fix a specific session or message |
+| `fix --all` | Fix all corrupted sessions |
+| `help` | Show help message |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Preview changes without modifying any files |
+
+### Usage Examples
 
 ```bash
 # List all corrupted sessions
 python3 tools/session-repair.py list
 
-# Preview fix without making changes
+# Preview fix without making changes (dry-run)
 python3 tools/session-repair.py fix --all --dry-run
 
-# Fix a specific session
-python3 tools/session-repair.py fix <session_id>
+# Fix a specific session by full ID
+python3 tools/session-repair.py fix ses_471a726a1ffe1hQ6hYnZZZ6btG
 
-# Fix all corrupted sessions
+# Fix a specific session by partial ID match
+python3 tools/session-repair.py fix ses_471a726
+
+# Fix a specific message by message ID
+python3 tools/session-repair.py fix msg_b91219779002aY62CeVyK7PxBy
+
+# Fix all corrupted sessions at once
 python3 tools/session-repair.py fix --all
 ```
 
-### Features
+### What Gets Removed
 
-1. **Scan** - Finds all sessions with signature-related errors
-2. **Identify** - Shows which message contains the invalid thinking block
-3. **Fix** - Removes the corrupted message and its parts
-4. **Backup** - Creates backups in `~/.local/share/opencode/repair-backups/` before changes
-5. **Dry-run** - Preview mode to see what would be changed
+When fixing a corrupted session, the tool removes:
 
-### Example Output
+1. **Source message** - The first assistant message containing the invalid thinking block signature
+2. **Error messages** - All messages that recorded the "Invalid signature in thinking block" API errors
+3. **Associated parts** - All part files (`prt_*.json`) linked to removed messages
+
+### Backup Location
+
+Before any modifications, backups are created at:
+```
+~/.local/share/opencode/repair-backups/session_{sessionID}_{timestamp}/
+```
+
+The backup preserves the original directory structure:
+```
+repair-backups/
+└── session_ses_471a726a1ffe1hQ6_20260106_141623/
+    ├── message/
+    │   └── ses_471a726a1ffe1hQ6hYnZZZ6btG/
+    │       ├── msg_b8e5ec4b7002m4e3wzClqFHkIG.json
+    │       ├── msg_b91219779002aY62CeVyK7PxBy.json
+    │       └── ...
+    └── part/
+        └── msg_b8e5ec4b7002m4e3wzClqFHkIG/
+            ├── prt_xxx.json
+            └── ...
+```
+
+### Example: List Command
 
 ```
 $ python3 tools/session-repair.py list
@@ -228,7 +280,17 @@ Found 6 corrupted message(s):
       Model: anthropic/claude-opus-4-5
       Error: messages.1.content.0: Invalid `signature` in `thinking` block
 
-    Fix: Remove message msg_b8e58d991002ckhkduTVs0f28I (3 parts)
+    - Message: msg_b91745c1c001WF2DeQRM9Raf3d
+      Time: 2026-01-06 11:58:00
+      Model: anthropic/claude-opus-4-5
+      Error: messages.1.content.0: Invalid `signature` in `thinking` block
+
+    - Message: msg_b91219779002aY62CeVyK7PxBy
+      Time: 2026-01-06 10:27:36
+      Model: anthropic/claude-opus-4-5
+      Error: messages.1.content.0: Invalid `signature` in `thinking` block
+
+    Fix: Remove 4 message(s) and 5 part(s)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -237,11 +299,62 @@ To fix a specific session, run:
 
 To fix all corrupted sessions, run:
   python session-repair.py fix --all
+
+Add --dry-run to see what would be done without making changes.
+```
+
+### Example: Fix Command with Dry-Run
+
+```
+$ python3 tools/session-repair.py fix ses_471a726a1ffe1hQ6hYnZZZ6btG --dry-run
+
+[DRY RUN] No changes will be made.
+
+Processing session: Reviewing SHM TTS migration plan
+  Session ID: ses_471a726a1ffe1hQ6hYnZZZ6btG
+  Status: WOULD SUCCEED
+  Messages removed: 4
+    - msg_b8e5ec4b7002m4e3wzClqFHkIG
+    - msg_b91219779002aY62CeVyK7PxBy
+    - msg_b91745c1c001WF2DeQRM9Raf3d
+    - msg_b91cd4f14002T7iD6rZ3TbqUIY
+  Parts removed: 5
+```
+
+### Example: Fix Command (Actual Fix)
+
+```
+$ python3 tools/session-repair.py fix ses_471a726a1ffe1hQ6hYnZZZ6btG
+
+Processing session: Reviewing SHM TTS migration plan
+  Session ID: ses_471a726a1ffe1hQ6hYnZZZ6btG
+  Status: SUCCESS
+  Messages removed: 4
+    - msg_b8e5ec4b7002m4e3wzClqFHkIG
+    - msg_b91219779002aY62CeVyK7PxBy
+    - msg_b91745c1c001WF2DeQRM9Raf3d
+    - msg_b91cd4f14002T7iD6rZ3TbqUIY
+  Parts removed: 5
+  Backup saved to: /home/luigi/.local/share/opencode/repair-backups/session_ses_471a726a1ffe1hQ6_20260106_141623
+
+============================================================
+Repair complete!
+Please restart OpenCode to see the changes.
+============================================================
 ```
 
 ### How It Works
 
-1. Scans `~/.local/share/opencode/storage/message/` for error messages containing "Invalid signature in thinking block"
-2. Parses the error position (e.g., `messages.1.content.0`) to identify which message has the corrupted thinking block
-3. Removes the identified message file and its associated parts from `storage/part/`
-4. Creates a timestamped backup before any modifications
+1. **Scan** - Searches `~/.local/share/opencode/storage/message/` for messages containing the error "Invalid signature in thinking block"
+2. **Parse** - Extracts the error position (e.g., `messages.1.content.0`) to identify which message has the corrupted thinking block
+3. **Identify** - Finds the source assistant message containing the invalid signature, plus all error messages
+4. **Backup** - Creates a timestamped backup preserving directory structure
+5. **Remove** - Deletes the identified message files and their associated parts from `storage/part/`
+
+### After Repair
+
+After running the fix:
+1. **Restart OpenCode** to reload session data
+2. The repaired session will have lost the first assistant response (the one with the invalid thinking block)
+3. You can continue using the session normally
+4. If needed, restore from backup at `~/.local/share/opencode/repair-backups/`
