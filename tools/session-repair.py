@@ -229,6 +229,63 @@ def find_error_messages(session_id: str) -> list[dict]:
     return error_messages
 
 
+def update_session_after_repair(session_id: str, removed_message_ids: set) -> bool:
+    """
+    Update the session file to remove references to deleted messages.
+    This ensures Claude can resume the session without encountering
+    references to non-existent messages.
+    """
+    for project_dir in SESSION_PATH.iterdir():
+        if not project_dir.is_dir():
+            continue
+        session_file = project_dir / f"{session_id}.json"
+        if session_file.exists():
+            try:
+                with open(session_file) as f:
+                    data = json.load(f)
+                
+                modified = False
+                
+                # Remove references from messageOrder list
+                if "messageOrder" in data and isinstance(data["messageOrder"], list):
+                    data["messageOrder"] = [
+                        msg_id for msg_id in data["messageOrder"]
+                        if msg_id not in removed_message_ids
+                    ]
+                    modified = True
+                
+                # Remove references from messages dict
+                if "messages" in data and isinstance(data["messages"], dict):
+                    for msg_id in removed_message_ids:
+                        if msg_id in data["messages"]:
+                            del data["messages"][msg_id]
+                            modified = True
+                
+                # Remove references from conversation.history
+                if "conversation" in data and isinstance(data["conversation"], dict):
+                    history = data["conversation"].get("history", [])
+                    if isinstance(history, list):
+                        # Rebuild history without removed messages
+                        new_history = []
+                        for entry in history:
+                            if isinstance(entry, dict) and entry.get("messageId") not in removed_message_ids:
+                                new_history.append(entry)
+                            elif not isinstance(entry, dict):
+                                new_history.append(entry)
+                        if len(new_history) != len(history):
+                            data["conversation"]["history"] = new_history
+                            modified = True
+                
+                if modified:
+                    with open(session_file, "w") as f:
+                        json.dump(data, f, indent=2)
+                    return True
+                    
+            except (json.JSONDecodeError, IOError, KeyError) as e:
+                pass
+    return False
+
+
 def fix_session(session_id: str, error_msg_index: int = 1, dry_run: bool = False) -> dict:
     """
     Fix a corrupted session by removing:
@@ -325,8 +382,12 @@ def fix_session(session_id: str, error_msg_index: int = 1, dry_run: bool = False
                 try:
                     parts_dir.rmdir()
                 except OSError:
-                    # Directory not empty or other error, ignore
                     pass
+    
+    # Update session file to remove references to deleted messages
+    removed_message_ids = set(result["messages_removed"])
+    if removed_message_ids:
+        update_session_after_repair(session_id, removed_message_ids)
     
     result["success"] = True
     return result
