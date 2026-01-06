@@ -33,8 +33,8 @@ See [docs/session-repair-tool-plan.md](docs/session-repair-tool-plan.md) for det
 ## Installation
 
 ```bash
-git clone https://github.com/vieenrose/workarounds-to-opencode-issues.git
-cd workarounds-to-opencode-issues
+git clone https://github.com/vieenrose/opencode-toolkit.git
+cd opencode-toolkit
 ```
 
 No additional dependencies required - tools use Python 3 standard library only.
